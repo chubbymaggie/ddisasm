@@ -1,4 +1,4 @@
-//===- Dl_instruction.cpp ---------------------------------------*- C++ -*-===//
+//===- debug_stats.dl -----------------------------------------*- datalog -*-===//
 //
 //  Copyright (C) 2019 GrammaTech, Inc.
 //
@@ -21,19 +21,37 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Dl_instruction.h"
-#include <sstream>
+// Predicates for debugging and statistics
+.decl discarded_aligned_pointer(ea:address)
+.output discarded_aligned_pointer
 
-std::string Dl_instruction::result_tabs()
-{
-    std::ostringstream o;
-    o << address << "\t" << size << "\t" << prefix << "\t" << name;
-    for(size_t i = 0; i < 4; ++i)
-    {
-        if(i < op_codes.size())
-            o << "\t" << op_codes[i];
-        else
-            o << "\t" << 0;
-    }
-    return o.str();
-}
+.decl discarded_aligned_pointer_to_text(ea:address)
+.output discarded_aligned_pointer_to_text
+
+.decl unaligned_pointer(ea:address)
+.output unaligned_pointer
+
+discarded_aligned_pointer_to_text(EA):-
+	address_in_data(EA,_),
+	!address_in_data_refined(EA,_),
+	pointer_size(Pt_size),
+	EA % Pt_size = 0.
+
+discarded_aligned_pointer(EA):-
+	discarded_data_object(EA,Pt_size,"symbol"),
+	EA % Pt_size = 0.
+
+unaligned_pointer(EA):-
+	data_object(EA,Pt_size,"symbol"),
+	EA % Pt_size != 0.
+
+.decl immediate_symbol(ea:address,op_index:number,dest:address)
+.output immediate_symbol
+
+immediate_symbol(EA,Op_index,Dest):-
+	code(EA),
+	instruction_get_op(EA,Op_index,Op),
+	can_have_symbolic(EA),
+	!direct_jump(EA,_),
+	!direct_call(EA,_),
+	op_immediate(Op,Dest).

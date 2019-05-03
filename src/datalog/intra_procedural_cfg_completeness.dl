@@ -38,18 +38,21 @@ jump_table(EA,Initial_memory):-
 	indirect_jump(EA),
 	pointer_size(Pt_size),
 	data_access_pattern(Initial_memory,Pt_size,Pt_size,EA),
-	symbolic_data(Initial_memory,_).
+	symbolic_data(Initial_memory,Dest_block),
+	refined_block(Dest_block).
 
 //use just the constant in the jump
 jump_table(EA,Initial_memory):-
 	code(EA),
 	indirect_jump(EA),
 	symbolic_data_operand_candidate(EA,1,Initial_memory),
-	symbolic_data(Initial_memory,_).
+	symbolic_data(Initial_memory,Dest_block),
+	refined_block(Dest_block).
 	
 jump_table(EA,Memory+8):-
 	jump_table(EA,Memory),
-	symbolic_data(Memory+8,_),
+	symbolic_data(Memory+8,Dest_block),
+	refined_block(Dest_block),
 	!data_access_pattern(Memory+8,_,_,_).
 
 // we have another access to the same table (the access can be before or after)
@@ -57,6 +60,7 @@ jump_table(EA,Memory+8):-
 	jump_table(EA,Memory),
 	symbolic_data(Memory,Content_prev),
 	symbolic_data(Memory+8,Content_next),
+	refined_block(Content_next),
 	pointer_size(Pt_size),
 	data_access_pattern(Memory+8,Pt_size,Pt_size,EA),
 	(
@@ -73,14 +77,15 @@ jump_table(EA,Memory+8):-
 
 resolved_jump(EA,Dest):-
 	jump_table(EA,Memory),
-	symbolic_data(Memory,Dest).
+	symbolic_data(Memory,Dest),
+	refined_block(Dest).
 	
 //////////////////////////////////////////////////////////////////////////////
 // record blocks that have jumps that are not resolved
 .decl incomplete_block(block:address,Cause:address)
 
 incomplete_block(Block,EA):-
-	code_in_block(EA,Block),
+	code_in_refined_block(EA,Block),
 	(
 	  reg_jump(EA)
 	;
@@ -91,7 +96,7 @@ incomplete_block(Block,EA):-
 .decl complete_block(block:address)
 
 complete_block(Block):-
-	block(Block),
+	refined_block(Block),
 	!incomplete_block(Block,_).
 
 // record blocks that contain a ret instruction
@@ -99,7 +104,7 @@ complete_block(Block):-
 .output block_contains_ret
 
 block_contains_ret(Block):-
-	code_in_block(EA,Block),
+	code_in_refined_block(EA,Block),
 	return(EA).
 	
 //////////////////////////////////////////////////////////////////////////////
@@ -109,7 +114,7 @@ block_contains_ret(Block):-
 .decl intra_reachable(Block:address,Function:address)
 
 intra_reachable(Block,Block):-
-	block(Block).
+	refined_block(Block).
 	
 intra_reachable(Src,Dest):-
 	intra_reachable(Src,A),
@@ -120,25 +125,23 @@ intra_reachable(Src,Dest):-
 .output intra_edge
 
 intra_edge(Src,Dest):-
-	code_in_block(EA,Src),
+	code_in_refined_block(EA,Src),
 	direct_jump(EA,Dest),
-	!plt_code_reference(EA,_),
 	!function_entry(Dest).
 
 intra_edge(Src,Dest):-
-	code_in_block(EA,Src),
+	code_in_refined_block(EA,Src),
 	pc_relative_jump(EA,Dest),
-	!plt_code_reference(EA,_),
 	!function_entry(Dest).
 	
 intra_edge(Src,Dest):-
-	code_in_block(EA,Src),
+	code_in_refined_block(EA,Src),
 	may_fallthrough(EA,Dest),
 	!no_return_call(EA),
-	code_in_block(Dest,Dest).
+	code_in_refined_block(Dest,Dest).
 
 intra_edge(Src,Dest):-
-	code_in_block(EA,Src),
+	code_in_refined_block(EA,Src),
 	resolved_jump(EA,Dest).
 
 .decl intra_edge_dir(Src:address,Dest:address,Dir:symbol)
@@ -155,15 +158,15 @@ intra_edge_dir(Src,Dest,"back"):-
 .decl must_intra_reachable(Block:address,Next:address)
 
 must_intra_reachable(Block,Block):-
-	block(Block),
+	refined_block(Block),
 	after_function_end(Block,_).
 
 must_intra_reachable(Block,Next):-
 	must_intra_reachable(Block,Reach),
-	code_in_block(EA,Reach),
+	code_in_refined_block(EA,Reach),
 	may_fallthrough(EA,Next),
 	!no_return_call(EA),
-	block(Next).
+	refined_block(Next).
 
 
 // a restricted version of common ancestor
@@ -188,7 +191,7 @@ goes_back(Src,Dest,"cjump"):-
 	Dest<Src,
 	// try to discard tail calls
 	(
-	 !inconditional_jump(Middle)
+	 !unconditional_jump(Middle)
 	;
 	//not a call to the beginning of a function
 	 !after_function_end(Dest,_)
@@ -206,5 +209,5 @@ incomplete_cfg(Block):-
 .decl complete_cfg(Block:address)
 
 complete_cfg(Block):-
-	block(Block),
+	refined_block(Block),
 	!incomplete_cfg(Block).

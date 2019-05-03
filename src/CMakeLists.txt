@@ -10,6 +10,7 @@ endif()
 set(DATALOG_SOURCES
     datalog/code_inference.dl
     datalog/code_inference_postprocess.dl
+    datalog/cfg.dl
     datalog/data_access_analysis.dl
     datalog/empty_range.dl
     datalog/float_operations.dl
@@ -24,9 +25,13 @@ set(DATALOG_SOURCES
     datalog/printable_chars.dl
     datalog/relative_jump_tables.dl
     datalog/symbolization.dl
-    datalog/traverse_code.dl
     datalog/use_def_analysis.dl
-    datalog/value_analysis.dl)
+    datalog/value_analysis.dl
+    datalog/debug_stats.dl)
+
+if(NOT CORES)
+  set(CORES "auto")
+endif()
 
 set(GENERATED_CPP "${CMAKE_BINARY_DIR}/src/souffle_disasm.cpp")
 add_custom_command(OUTPUT ${GENERATED_CPP}
@@ -34,7 +39,7 @@ add_custom_command(OUTPUT ${GENERATED_CPP}
   # program name. Change directory and use a relative path so the name
   # does not depend on build location.
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/"
-  COMMAND ${SOUFFLE} ${CMAKE_CURRENT_SOURCE_DIR}/datalog/main.dl -g souffle_disasm.cpp -jauto
+  COMMAND ${SOUFFLE} ${CMAKE_CURRENT_SOURCE_DIR}/datalog/main.dl -g souffle_disasm.cpp -j${CORES}
   DEPENDS ${DATALOG_SOURCES})
 
 # ===== souffle_disasm =====
@@ -53,6 +58,11 @@ target_compile_definitions(disasm_main PRIVATE RAM_DOMAIN_SIZE=64)
 target_compile_options(disasm_main PRIVATE -Wall -Wextra -Wpointer-arith)
 target_compile_options(disasm_main PRIVATE -Werror -fopenmp)
 #target_compile_options(ddisasm_main PRIVATE -O3)
+
+if( ${GTIRB_USE_SYSTEM_BOOST} MATCHES "OFF" )
+  add_dependencies(disasm_main Boost)
+endif()
+
 target_link_libraries(disasm_main
   gtirb
   gtirb_pprinter
@@ -69,3 +79,5 @@ target_compile_definitions(ddisasm PRIVATE RAM_DOMAIN_SIZE=64)
 target_compile_options(ddisasm PRIVATE -fopenmp)
 target_compile_options(ddisasm PRIVATE -O3)
 target_link_libraries(ddisasm gomp)
+
+install(TARGETS ddisasm DESTINATION bin)

@@ -61,45 +61,48 @@ compute an address but this is also no enough.
 ////////////////////////////////////////////////////////////////////////////////////
 
 moved_data_label(EA,Dest,New_dest):-
-	address_in_data_refined(EA,Dest),
+	symbolic_data(EA,Dest),
 	address_in_data_refined_range.overlap(Dest,8,New_dest).
 
 //if something points to the middle of a known symbol we express it as symbol+constant
 //as long as it is not code
 moved_data_label(EA,Dest,Address):-
-	address_in_data_refined(EA,Dest),
+	symbolic_data(EA,Dest),
 	!code(Dest),
-	symbol(Address,Size,_,_,_),
+	symbol(Address,Size,_,_,_,_),
 	Address<Dest,
 	Dest<Address+Size.
 
 ////////////////////////////////////////////////////////////////////////////////////
 
-.decl related_data_access(EA:address,Dest:address)
 
-.output related_data_access
+.decl address_comparison(EA_cmp:address,Address:address)
 
-related_data_access(EA,Dest):-
-	data_access_pattern(Dest,_,_,EA),
-	!instruction_get_operation(EA,"LEA").
-
-related_data_access(EA_def,Dest):-
-	related_data_access(EA_used,Dest),
-	def_used(EA_def,_,EA_used,_),
-	(
-	!data_access_pattern(_,_,_,EA_def)
-	;
-	instruction_get_operation(EA_def,"LEA")
-	).
-	
-related_data_access(EA_cmp,Dest):-
-	related_data_access(EA_used,Dest),
+address_comparison(EA_cmp,Dest):-
+	data_access_pattern(Dest,_,_,EA_used),
+	!instruction_get_operation(EA_used,"LEA"),
 	used_for_address(EA_cmp,Reg,EA_used,_),
 	instruction_get_operation(EA_cmp,Operation),
 	comparison_operation(Operation),
 	instruction_get_src_op(EA_cmp,_,Op1),
 	op_regdirect_contains_reg(Op1,Reg),
 	!data_access_pattern(_,_,_,EA_cmp).
+
+
+.decl related_data_access(EA:address,Dest:address)
+.output related_data_access
+// there is a LEA instruction that load some address in memory
+// this address is used to access memory later somewhere else
+related_data_access(EA_def,Dest):-
+	address_comparison(EA_used,Dest),
+	def_used(EA_def,_,EA_used,Index),
+	(
+	!data_access_pattern(_,_,_,EA_def)
+	;
+	instruction_get_operation(EA_def,"LEA")
+	).
+	
+
 
 ////////////////////////////////////////////////////////////////////////////////////
 
@@ -146,7 +149,6 @@ moved_label(EA,Op_index,Dest,New_dest):-
 // label lands in the middle of a pointer
 moved_label(EA,Op_index,Dest,New_dest):-
 	symbolic_data_operand_candidate(EA,Op_index,Dest),
-	1>=count:{symbolic_data_operand_candidate(_,_,Dest)},//it appears only once
 	data_access_pattern(New_dest,_,_,EA),
 	(Dest>New_dest+3
 	;
@@ -158,16 +160,11 @@ moved_label(EA,Op_index,Dest,New_dest):-
 
 moved_label(EA,Op_index,Dest,New_dest):-
 	symbolic_data_operand_candidate(EA,Op_index,Dest),
-	1>=count:{symbolic_data_operand_candidate(_,_,Dest)},//it appears only once
-	//it might collide with a very likely pointer
+	//it collides with a pointer
 	pointer_size(Pt_size),
 	address_in_data_refined_range.overlap(Dest,Pt_size,New_dest),
-	(
-	preferred_data_access(New_dest,Label),
-	data_access_pattern(Label,Pt_size,_,_)
-	;
-	address_array(New_dest)
-	).
+	symbolic_data(New_dest,_).
+
 	
 // the pointer is likely to point to the wrong section
 moved_label(EA,Op_index,Dest,New_dest):-
@@ -293,6 +290,6 @@ moved_label(EA,Op_index,Dest,New_dest):-
 // If the destination is in the middle of a known symbol
 moved_label(EA,Op_index,Dest,Address):-
  	symbolic_data_operand_candidate(EA,Op_index,Dest),
- 	symbol(Address,Size,_,_,_),
+ 	symbol(Address,Size,_,_,_,_),
  	Address<Dest,
 	Dest<Address+Size.

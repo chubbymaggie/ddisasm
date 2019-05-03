@@ -56,11 +56,11 @@ function_entry(EA):-
 function_entry(EA):-
 	direct_call(EA_caller,EA),
 	code(EA_caller),
-	block(EA).
+	refined_block(EA).
 
 //section start
 function_entry(EA):-
-	block(EA),
+	refined_block(EA),
 	section(_,_,EA).
 
 
@@ -74,7 +74,7 @@ function_entry(EA):-
 
 // not referenced anywhere
 function_entry(EA):-
-	block(EA),
+	refined_block(EA),
 	after_function_end(EA,_),
 	!possible_target_from(EA,_),
 	!symbolic_data(_,EA),
@@ -82,7 +82,7 @@ function_entry(EA):-
 
 // two consecutive elements in a table with typical function beginnings
 function_entry(EA):-
-	block(EA),
+	refined_block(EA),
 	after_function_end(EA,_),
 	!possible_target_from(EA,_),
 	symbolic_data(Pointer,EA),
@@ -96,7 +96,7 @@ function_entry(EA):-
 
 // the address is moved to a register
 function_entry(EA):-
-	block(EA),
+	refined_block(EA),
 	after_function_end(EA,_),
 	possible_target_from(EA,Src),
 	code(Src),
@@ -107,7 +107,7 @@ function_entry(EA):-
 	function_table(Label),
 	preferred_data_access(Offset,Label),
 	symbolic_data(Offset,EA),
-	block(EA),
+	refined_block(EA),
 	after_function_end(EA,_).
 
 // // referenced from lonely pointer
@@ -139,7 +139,7 @@ function_entry(EA2):-
 	after_function_end(EA2,_).
 
 function_entry(EA2):-
-	plt_data_reference(Offset,_Function),
+	plt_data_reference(Offset),
 	pointer_size(Pt_size),
 	code_pointer_in_data(Offset+Pt_size,EA2),
 	!resolved_jump(_,EA2),
@@ -147,7 +147,7 @@ function_entry(EA2):-
 	!labeled_data(Offset+Pt_size).
 
 function_entry(EA2):-
-	plt_data_reference(Offset,_Function),
+	plt_data_reference(Offset),
 	pointer_size(Pt_size),
 	!labeled_data(Offset),
 	code_pointer_in_data(Offset-Pt_size,EA2),
@@ -158,10 +158,10 @@ function_entry(EA2):-
 ////////////////
 //propagation: jumped from another function (there is a function boundary in between)
 function_entry2(EA):-
-	block(EA),
+	refined_block(EA),
 	after_function_end(EA,_),
 	direct_jump(Src,EA),
-	inconditional_jump(Src),
+	unconditional_jump(Src),
 	code(Src),
 	function_entry(Middle),
 	(
@@ -178,6 +178,9 @@ function_entry2(EA):-
 .decl function_entry2(EA:address)
 .output function_entry2
 
+.decl in_function(EA:address,Function:address)
+.output in_function
+
 function_entry2(EA):-
 	function_entry(EA).
 	
@@ -185,10 +188,10 @@ function_entry2(EA):-
 	in_function(Block,Function),
 	Function<=Block,
 	complete_cfg(Function),
-	code_in_block(End,Block),
+	code_in_refined_block(End,Block),
 	after_function_end(EA,End),
 	
-	block(EA),
+	refined_block(EA),
 	!is_nop(EA),
 	!resolved_jump(_,EA),
 	//cannot be reached from before
@@ -199,14 +202,11 @@ function_entry2(EA):-
 	instruction_get_operation(End,"CALL"),
 	!intra_edge_dir(EA,_,"back"),
 	!goes_back(EA,_,"cjump"),
-	!inconditional_jump(EA)
+	!unconditional_jump(EA)
 	;
 	!instruction_get_operation(End,"CALL")
 	).
 
-
-.decl in_function(EA:address,Function:address)
-.output in_function
 
 in_function(Block,Function):-
 	function_entry2(Function),
@@ -243,11 +243,11 @@ function_table(Label):-
 		instruction_get_operation(Origin,"CALL")
 	;
 		Mult>Pt_size,
-		!inconditional_jump(Origin)
+		!unconditional_jump(Origin)
 	),
 	preferred_data_access(Offset,Label),
 	symbolic_data(Offset,EA),
-	block(EA).
+	refined_block(EA).
 
 //////////////////////////////////////////////////////////////////////////////
 // heuristic markers
@@ -295,7 +295,7 @@ function_end(EA):-
 	return(EA).
 
 function_end(EA):-
-	inconditional_jump(EA).
+	unconditional_jump(EA).
 	
 function_end(EA):-
 	halt(EA).	
