@@ -46,6 +46,7 @@ more points.
 .decl code_in_block(ea:address,block:address)
 .decl block(block:address)
 .decl code(ea:address)
+.decl block_last_instruction(block:address,EA:address)
 
  // The postprocess refines the blocks by merging contiguous blocks
  // that are always executed together
@@ -68,7 +69,8 @@ may_fallthrough(From,To):-
 	next(From,To),
 	!return(From),
 	!unconditional_jump(From),
-	!halt(From).
+	!halt(From),
+	!no_return_call_basic(From).
 		
 .decl must_fallthrough(o:address,d:address)
 
@@ -86,38 +88,33 @@ must_fallthrough(From,To):-
 // in some obvious cases. This is specially useful for PIE code where
 // the address space starts from 0 (and therefore we have many more collisions).
 
-.decl may_have_symbolic_immediate(dest:address,src:address)
+.decl may_have_symbolic_immediate(src:address,dest:address)
 
-may_have_symbolic_immediate(Dest,Src):-
-	can_have_symbolic(Src),
-	instruction_get_op(Src,_,Op),
+may_have_symbolic_immediate(Src,Dest):-
+    instruction_immediate_offset(Src,Index,Offset),
+    instruction_get_op(Src,Index,Op),
 	op_immediate(Op,Dest),
-	instruction_get_operation(Src,Operation),
-	!operation_not_for_address(Operation).
+    (binary_type("DYN"),
+     relocation(Src+Offset,_,_,_)
+    ;
+     binary_type("REL"),
+     relocation(Src+Offset,_,_,_)
+	;
+     binary_type("EXEC"),
+     instruction_get_operation(Src,Operation),
+     !operation_not_for_address(Operation)
+	).
+
+may_have_symbolic_immediate(Src,Dest):-
+    direct_jump(Src,Dest).
+
+may_have_symbolic_immediate(Src,Dest):-
+    direct_call(Src,Dest).
 
 .decl operation_not_for_address(Operation:symbol)
 
 operation_not_for_address("AND").
 operation_not_for_address("XOR").
-
-.decl can_have_symbolic(EA:address)
-
-can_have_symbolic(Src):-
-	instruction(Src,Size,_,_,_,_,_,_),
-	(
-	binary_type("DYN"),
-	relocation(Location,_,_,_),
-	Src<=Location,
-	Location<Src+Size
-	;
-	binary_type("EXEC")
-	).
-
-can_have_symbolic(EA):-
-	direct_jump(EA,_).
-
-can_have_symbolic(EA):-
-	direct_call(EA,_).
 
 .decl invalid(EA:address)
 
@@ -166,6 +163,10 @@ basic_target(Val):-
 	address_in_data(EA,Val),
 	relocation(EA,_,_,_)
 	;
+    binary_type("REL"),
+    address_in_data(EA,Val),
+    relocation(EA,_,_,_)
+    ;
 	binary_type("EXEC"),
 	address_in_data(_,Val)
 	;
@@ -182,8 +183,7 @@ basic_target(Val):-
 block_limit(EA):-
 	(
 	op_immediate(_,EA);
-	pc_relative_jump(_,EA);
-	pc_relative_call(_,EA);
+	pc_relative_operand(_,_,EA);
 	basic_target(EA);
     instruction_has_loop_prefix(EA)
 	).
@@ -196,9 +196,8 @@ block_limit(EA):-
 possible_target_from(Dest,Src):-
 	code_in_block_candidate(Src,_),
 	(
-	may_have_symbolic_immediate(Dest,Src);
-	pc_relative_jump(Src,Dest);
-	pc_relative_call(Src,Dest)
+	may_have_symbolic_immediate(Src,Dest);
+	pc_relative_operand(Src,_,Dest)
 	).
 
 .decl possible_target(Target:address)
@@ -523,6 +522,11 @@ block_points(Block,0,1,"plt call"):-
 code_in_block(EA,Block):-
 	code_in_block_candidate_refined(EA,Block),
 	!discarded_block(Block).
+
+block_last_instruction(Block,EA):-
+    code_in_block(EA,Block),
+    next(EA,Next),
+    !code_in_block(Next,Block).
 
 block(Block):-
 	code_in_block(_,Block).

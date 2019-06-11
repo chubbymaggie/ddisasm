@@ -74,15 +74,12 @@ struct DecodedInstruction
 
     DecodedInstruction(souffle::tuple &tuple)
     {
-        assert(tuple.size() == 8);
+        assert(tuple.size() == 10);
 
         std::string prefix, opcode;
 
-        tuple >> EA >> Size >> prefix >> opcode;
-        this->Op1 = tuple[4];
-        this->Op2 = tuple[5];
-        this->Op3 = tuple[6];
-        this->Op4 = tuple[7];
+        tuple >> EA >> Size >> prefix >> opcode >> Op1 >> Op2 >> Op3 >> Op4 >> immediateOffset
+            >> displacementOffset;
     };
 
     gtirb::Addr EA{0};
@@ -91,6 +88,8 @@ struct DecodedInstruction
     uint64_t Op2{0};
     uint64_t Op3{0};
     uint64_t Op4{0};
+    int64_t immediateOffset{0};
+    int64_t displacementOffset{0};
 };
 
 struct OpRegdirect
@@ -230,7 +229,7 @@ struct SymbolicExpression
     }
     SymbolicExpression(souffle::tuple &tuple)
     {
-        assert(tuple.size() == 2);
+        assert(tuple.size() == 4);
         tuple >> EA >> OpNum;
     };
 
@@ -447,13 +446,14 @@ static void buildSymbols(gtirb::Module &module, souffle::SouffleProgram *prog)
         else
             gtirb::emplaceSymbol(module, C, base, name, getSymbolType(sectionIndex, scope));
     }
-
-    if(!module.findSymbols("main"))
-        for(gtirb::Addr addrMain : convertRelation<gtirb::Addr>("main_function", prog))
-            gtirb::emplaceSymbol(module, C, addrMain, "main");
-    if(!module.findSymbols("_start"))
-        for(gtirb::Addr addrMain : convertRelation<gtirb::Addr>("start_function", prog))
-            gtirb::emplaceSymbol(module, C, addrMain, "_start");
+    for(auto &output : *prog->getRelation("inferred_symbol_name"))
+    {
+        gtirb::Addr addr;
+        std::string name;
+        output >> addr >> name;
+        if(!module.findSymbols(name))
+            gtirb::emplaceSymbol(module, C, addr, name);
+    }
 }
 
 static void buildSections(gtirb::Module &module, Elf_reader &elf, souffle::SouffleProgram *prog)
@@ -521,13 +521,28 @@ static void expandSymbolForwarding(gtirb::Module &module, souffle::SouffleProgra
 {
     auto *symbolForwarding =
         module.getAuxData<std::map<gtirb::UUID, gtirb::UUID>>("symbolForwarding");
-    for(auto &output : *prog->getRelation("plt_entry"))
+    for(auto &output : *prog->getRelation("plt_block"))
     {
         gtirb::Addr ea;
         std::string name;
         output >> ea >> name;
-        // the inference of plt_entry guarantees that there is at most one
+        // the inference of plt_block guarantees that there is at most one
         // destination symbol for each source
+        auto foundSrc = module.findSymbols(ea);
+        auto foundDest = module.findSymbols(name);
+        for(gtirb::Symbol &src : foundSrc)
+        {
+            for(gtirb::Symbol &dest : foundDest)
+            {
+                (*symbolForwarding)[src.getUUID()] = dest.getUUID();
+            }
+        }
+    }
+    for(auto &output : *prog->getRelation("got_reference"))
+    {
+        gtirb::Addr ea;
+        std::string name;
+        output >> ea >> name;
         auto foundSrc = module.findSymbols(ea);
         auto foundDest = module.findSymbols(name);
         for(gtirb::Symbol &src : foundSrc)
@@ -542,10 +557,7 @@ static void expandSymbolForwarding(gtirb::Module &module, souffle::SouffleProgra
 
 bool isNullReg(const std::string &reg)
 {
-    const std::vector<std::string> adapt{"NullReg64", "NullReg32", "NullReg16", "NullSReg"};
-
-    const auto found = std::find(std::begin(adapt), std::end(adapt), reg);
-    return (found != std::end(adapt));
+    return reg == "NONE";
 }
 
 static std::string getLabel(uint64_t ea)
@@ -665,7 +677,7 @@ void buildCodeSymbolicInformation(gtirb::Module &module, souffle::SouffleProgram
         convertSortedRelation<VectorByEA<MovedLabel>>("moved_label", prog),
         convertSortedRelation<VectorByEA<SymbolicExpression>>("symbolic_operand", prog)};
     auto decodedInstructions =
-        convertSortedRelation<VectorByEA<DecodedInstruction>>("instruction", prog);
+        convertSortedRelation<VectorByEA<DecodedInstruction>>("instruction_complete", prog);
     auto opImmediate = convertSortedRelation<VectorByN<OpImmediate>>("op_immediate", prog);
     auto opIndirect = convertSortedRelation<VectorByN<OpIndirect>>("op_indirect", prog);
     for(auto &cib : codeInBlock)
@@ -938,7 +950,7 @@ static void updateComment(std::map<gtirb::Addr, std::string> &comments, gtirb::A
         comments[ea] = newComment;
 }
 
-static void buildComments(gtirb::Module &module, souffle::SouffleProgram *prog)
+static void buildComments(gtirb::Module &module, souffle::SouffleProgram *prog, bool selfDiagnose)
 {
     std::map<gtirb::Addr, std::string> comments;
     for(auto &output : *prog->getRelation("data_access_pattern"))
@@ -964,20 +976,78 @@ static void buildComments(gtirb::Module &module, souffle::SouffleProgram *prog)
 
     for(auto &output : *prog->getRelation("best_value_reg"))
     {
-        gtirb::Addr ea;
+        gtirb::Addr ea, eaOrigin;
         std::string reg, type;
         int64_t multiplier, offset;
-        output >> ea >> reg >> multiplier >> offset >> type;
+        output >> ea >> reg >> eaOrigin >> multiplier >> offset >> type;
         std::ostringstream newComment;
         newComment << reg << "=X*" << multiplier << "+" << std::hex << offset << std::dec
                    << " type(" << type << ") ";
         updateComment(comments, ea, newComment.str());
     }
+
+    for(auto &output : *prog->getRelation("value_reg"))
+    {
+        gtirb::Addr ea;
+        std::string reg, reg2;
+        int64_t multiplier, offset, ea2;
+        output >> ea >> reg >> ea2 >> reg2 >> multiplier >> offset;
+        std::ostringstream newComment;
+        newComment << reg << "=(" << reg2 << "," << std::hex << ea2 << std::dec << ")*"
+                   << multiplier << "+" << std::hex << offset << std::dec;
+        updateComment(comments, ea, newComment.str());
+    }
+
+    for(auto &output : *prog->getRelation("moved_label_class"))
+    {
+        gtirb::Addr ea;
+        std::string type;
+
+        output >> ea >> type;
+        std::ostringstream newComment;
+        newComment << " moved label-" << type;
+        updateComment(comments, ea, newComment.str());
+    }
+
+    for(auto &output : *prog->getRelation("def_used"))
+    {
+        gtirb::Addr ea_use;
+        int64_t ea_def, index;
+        std::string reg;
+        output >> ea_def >> reg >> ea_use >> index;
+        std::ostringstream newComment;
+        newComment << "def(" << reg << ", " << std::hex << ea_def << std::dec << ")";
+        updateComment(comments, ea_use, newComment.str());
+    }
+    if(selfDiagnose)
+    {
+        for(auto &output : *prog->getRelation("false_positive"))
+        {
+            gtirb::Addr ea;
+            output >> ea;
+            updateComment(comments, ea, "false positive");
+        }
+        for(auto &output : *prog->getRelation("false_negative"))
+        {
+            gtirb::Addr ea;
+            output >> ea;
+            updateComment(comments, ea, "false negative");
+        }
+        for(auto &output : *prog->getRelation("bad_symbol_constant"))
+        {
+            gtirb::Addr ea;
+            int64_t index;
+            output >> ea >> index;
+            std::ostringstream newComment;
+            newComment << "bad_symbol_constant(" << index << ")";
+            updateComment(comments, ea, newComment.str());
+        }
+    }
     module.addAuxData("comments", std::move(comments));
 }
 
 static void buildIR(gtirb::IR &ir, const std::string &filename, Elf_reader &elf,
-                    souffle::SouffleProgram *prog)
+                    souffle::SouffleProgram *prog, bool selfDiagnose)
 {
     gtirb::Module &module = *gtirb::Module::Create(C);
     module.setBinaryPath(filename);
@@ -995,14 +1065,40 @@ static void buildIR(gtirb::IR &ir, const std::string &filename, Elf_reader &elf,
     connectSymbolsToBlocks(module);
     buildFunctions(module, prog);
     buildCFG(module, prog);
-    buildComments(module, prog);
+    buildComments(module, prog, selfDiagnose);
 }
 
-static void performSanityChecks(souffle::SouffleProgram *prog)
+static void performSanityChecks(souffle::SouffleProgram *prog, bool selfDiagnose)
 {
+    bool error = false;
+    if(selfDiagnose)
+    {
+        std::cout << "Perfoming self diagnose (this will only give the right results if the target "
+                     "program contains all the relocation information)"
+                  << std::endl;
+        auto falsePositives = prog->getRelation("false_positive");
+        if(falsePositives->size() > 0)
+        {
+            error = true;
+            std::cerr << "False positives: " << falsePositives->size() << std::endl;
+        }
+        auto falseNegatives = prog->getRelation("false_negative");
+        if(falseNegatives->size() > 0)
+        {
+            error = true;
+            std::cerr << "False negatives: " << falseNegatives->size() << std::endl;
+        }
+        auto badSymbolCnt = prog->getRelation("bad_symbol_constant");
+        if(badSymbolCnt->size() > 0)
+        {
+            error = true;
+            std::cerr << "Bad symbol constants: " << badSymbolCnt->size() << std::endl;
+        }
+    }
     auto blockOverlap = prog->getRelation("block_still_overlap");
     if(blockOverlap->size() > 0)
     {
+        error = true;
         std::cerr << "The conflicts between the following code blocks could not be resolved:"
                   << std::endl;
         for(auto &output : *blockOverlap)
@@ -1011,9 +1107,14 @@ static void performSanityChecks(souffle::SouffleProgram *prog)
             output >> ea;
             std::cerr << std::hex << ea << std::dec << " ";
         }
+    }
+    if(error)
+    {
         std::cerr << "Aborting" << std::endl;
         exit(1);
     }
+    if(selfDiagnose && !error)
+        std::cout << "Self diagnose completed: No errors found" << std::endl;
 }
 
 static void decode(Dl_decoder &decoder, Elf_reader &elf, std::vector<std::string> sections,
@@ -1063,7 +1164,7 @@ static void writeFacts(Dl_decoder &decoder, Elf_reader &elf, const std::string &
     elf.print_symbols_to_file(directory + "symbol.facts");
     elf.print_relocations_to_file(directory + "relocation.facts");
 
-    std::ofstream instructions_file(directory + "instruction.facts", filemask);
+    std::ofstream instructions_file(directory + "instruction_complete.facts", filemask);
     decoder.print_instructions(instructions_file);
     instructions_file.close();
 
@@ -1129,7 +1230,7 @@ souffle::tuple &operator<<(souffle::tuple &t, const Dl_instruction &inst)
         else
             t << 0;
     }
-
+    t << inst.immediateOffset << inst.displacementOffset;
     return t;
 }
 
@@ -1169,7 +1270,7 @@ static void loadInputs(souffle::SouffleProgram *prog, Elf_reader &elf, const Dl_
     addRelation(prog, "section", elf.get_sections());
     addRelation(prog, "symbol", elf.get_symbols());
     addRelation(prog, "relocation", elf.get_relocations());
-    addRelation(prog, "instruction", decoder.instructions);
+    addRelation(prog, "instruction_complete", decoder.instructions);
     addRelation(prog, "address_in_data", decoder.data);
     addRelation(prog, "data_byte", decoder.data_bytes);
     addRelation(prog, "invalid_op_code", decoder.invalids);
@@ -1199,9 +1300,10 @@ using namespace std;
 
 int main(int argc, char **argv)
 {
-    std::vector<std::string> sections{".plt.got", ".fini", ".init", ".plt", ".text"};
-    std::vector<std::string> dataSections{".data",        ".rodata",  ".fini_array", ".init_array",
-                                          ".data.rel.ro", ".got.plt", ".got"};
+    std::vector<std::string> sections{".plt.got", ".fini", ".init", ".plt", ".text", ".plt.sec"};
+    std::vector<std::string> dataSections{".data",       ".rodata",         ".fini_array",
+                                          ".init_array", ".data.rel.ro",    ".got.plt",
+                                          ".got",        ".tm_clone_table", ".dynamic"};
 
     po::options_description desc("Allowed options");
     desc.add_options()                                                                    //
@@ -1219,7 +1321,10 @@ int main(int argc, char **argv)
         ("input-file", po::value<std::string>(), "file to disasemble")(
             "keep-functions,K",
             boost::program_options::value<std::vector<std::string>>()->multitoken(),
-            "Print the given functions even if they are skipped by default (e.g. _start)");
+            "Print the given functions even if they are skipped by default (e.g. _start)")(
+            "self-diagnose",
+            "Use relocation information to emit a self diagnose of the symbolization process. This "
+            "option only works if the target binary contains complete relocation information.");
     po::positional_options_description pd;
     pd.add("input-file", -1);
 
@@ -1274,7 +1379,7 @@ int main(int argc, char **argv)
 
             std::cout << "Building the gtirb representation" << std::endl;
             auto &ir = *gtirb::IR::Create(C);
-            buildIR(ir, filename, elf, prog);
+            buildIR(ir, filename, elf, prog, vm.count("self-diagnose") != 0);
 
             // Output GTIRB
             if(vm.count("ir") != 0)
@@ -1318,7 +1423,7 @@ int main(int argc, char **argv)
                 writeFacts(decoder, elf, dir);
                 prog->printAll(dir);
             }
-            performSanityChecks(prog);
+            performSanityChecks(prog, vm.count("self-diagnose") != 0);
             delete prog;
             return 0;
         }

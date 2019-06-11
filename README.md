@@ -69,14 +69,14 @@ $ make
 ## Running the analysis
 
 Once `ddisasm` is built, we can run complete analysis on a file by
-calling `/bin/ddisasm'`.  For example, we can run the analysis on one
+calling `build/bin/ddisasm'`.  For example, we can run the analysis on one
 of the examples as follows:
 
 ```
 cd build/bin ./ddisasm ../../examples/ex1/ex --asm ex.s
 ```
 
-The script accepts the following parameters:
+Ddisasm accepts the following parameters:
 
 `--help`
 :   produce help message
@@ -90,6 +90,9 @@ The script accepts the following parameters:
 `--ir arg`
 :   GTIRB output file
 
+`--json arg`
+:   GTIRB json output file
+
 `--asm arg`
 :   ASM output file
 
@@ -98,6 +101,15 @@ The script accepts the following parameters:
 
 `--debug-dir arg`
 :   location to write CSV files for debugging
+
+-K [ --keep-functions ] arg
+:   Print the given functions even if they are skipped by default (e.g. _start)
+
+`--self-diagnose`
+:   This option is useful for debugging. Use relocation information to emit a self diagnosis
+    of the symbolization process. This option only works if the target
+    binary contains complete relocation information. You can enable
+    that in `ld` using the option `--emit-relocs`.
 
 
 ## Rewriting a project
@@ -138,7 +150,7 @@ Please follow the Code Requirements in
 
 2. [Capstone disassembler](http://www.capstone-engine.org/)
 
-3. [Control Flow Integrity for COTS Binaries](http://stonecat/repos/reading/papers/12313-sec13-paper_zhang.pdf)
+3. [Control Flow Integrity for COTS Binaries](http://seclab.cs.sunysb.edu/seclab/pubs/usenix13.pdf)
 
 4. [Alias analysis for Assembly](http://reports-archive.adm.cs.cmu.edu/anon/anon/usr/ftp/2006/CMU-CS-06-180R.pdf)
 
@@ -148,4 +160,4 @@ Please follow the Code Requirements in
 
 7. [An In-Depth Analysis of Disassembly on Full-Scale x86/x64 Binaries](https://www.usenix.org/system/files/conference/usenixsecurity16/sec16_paper_andriesse.pdf)
 
-8. [Binary Code is Not Easy](http://delivery.acm.org/10.1145/2940000/2931047/p24-meng.pdf?ip=98.159.213.242&id=2931047&acc=CHORUS&key=4D4702B0C3E38B35%2E4D4702B0C3E38B35%2E4D4702B0C3E38B35%2E6D218144511F3437&__acm__=1539001930_dedfe0a1aa0c9bf006dbe0874ff74722)
+8. [Binary Code is Not Easy](https://dl.acm.org/citation.cfm?id=2931047)

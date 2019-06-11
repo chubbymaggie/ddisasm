@@ -42,16 +42,40 @@ exit point of the SCC.
 .decl scc_representative(Block:address)
 .decl scc_exit(SCC:address,Exit_block:address)
 
+/*
+ Computing SCCs in datalog is not efficient. We cannot do a depth first traversal.
+ We adopt a different approach:
+  - Compute reachability starting from blocks that have a back edge. At least one back edge has to be involved in cycles
+  - If one of those blocks reaches itself, we have a cycle. Then compute reachability backwards from those
+    initial nodes. These reachability is intersected on the fly with forward reachability.
+    Only compute blocks that are both reached and reach a given node.
+*/
+.decl back_edge_reachable(BlockSrc:address,BlockDest:address)
 
-.decl intra_reachable_initial(Block:address,Function:address)
+back_edge_reachable(Src,Dest):-
+    intra_back_edge(Src,Dest).
 
-intra_reachable_initial(Block,Block):-
-	refined_block(Block).
-	
-intra_reachable_initial(Src,Dest):-
-	intra_reachable_initial(Src,A),
-	intra_edge_initial(A,Dest).
-	
+
+back_edge_reachable(Src,Dest):-
+    back_edge_reachable(Src,Intermediate), Src!=Intermediate,
+    intra_edge_initial(Intermediate,Dest),
+    // because of the flat layout every cycle needs a lowest backedge such that
+    // all other nodes in the cycle are above
+    // it should be enough to consider cycles from those
+    Dest <= Src.
+
+.decl back_edge_coreachable(Block:address,BlockFrom:address)
+
+back_edge_coreachable(Block,From):-
+    back_edge_reachable(Block,Block),
+    intra_edge_initial(From,Block),
+    back_edge_reachable(Block,From).
+
+back_edge_coreachable(Block,From):-
+    back_edge_coreachable(Block,Intermediate), Block!=Intermediate,
+    intra_edge_initial(From,Intermediate),
+    back_edge_reachable(Block,From).
+
 
 .decl intra_edge_initial(Block_src:address,Block_dest:address)
 
@@ -72,6 +96,11 @@ intra_edge_initial(Src,Dest):-
 	code_in_refined_block(EA,Src),
 	resolved_jump(EA,Dest).
 
+.decl intra_back_edge(Block_src:address,Block_dest:address)
+
+intra_back_edge(Src,Dest):-
+    intra_edge_initial(Src,Dest),
+    Dest<=Src.
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -80,14 +109,19 @@ intra_edge_initial(Src,Dest):-
 .output in_scc
 
 in_scc(Block1,Block2):-
-	intra_reachable_initial(Block1,Block2),
-	intra_reachable_initial(Block2,Block1),
+    back_edge_reachable(Block1,Block2),
+    back_edge_coreachable(Block1,Block2),
+    Block1<Block2.
+
+in_scc(Block1,Block2):-
+    back_edge_reachable(Block2,Block1),
+    back_edge_coreachable(Block2,Block1),
 	Block1<Block2.
 
 .decl single_scc(Block:address)
 
 single_scc(Block):-
-	intra_edge_initial(Block,Block),
+    intra_back_edge(Block,Block),
 	!in_scc(Block,_),
 	!in_scc(_,Block).
 	

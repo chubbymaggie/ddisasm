@@ -60,7 +60,7 @@ This module also computes and symbol_minus_symbol.
 #include "data_access_analysis.dl" // data_access_analysis uses predicates from here
 #include "pointer_reatribution.dl"
 
-.decl symbolic_operand(ea:address,index:operand_index)
+.decl symbolic_operand(ea:address,index:operand_index,value:address,type:symbol)
 .output symbolic_operand
 
 .decl symbolic_data(ea:address,value:address)
@@ -88,11 +88,142 @@ This module also computes and symbol_minus_symbol.
 .decl string(ea:address,end:address)
 .output string
 
+////////////////////////////////////////////////////////////////////////////////////
+// candidates of symbolic values in the code
+
+.decl symbolic_operand_candidate(ea:address,operand_index:number,Dest:address,Type:symbol)
+.decl symbolic_operand_point(ea:address,operand_index:number,points:number,why:symbol)
+.output symbolic_operand_point
+.decl symbolic_operand_total_points(ea:address,operand_index:number,points:number)
+
+symbolic_operand_candidate(EA,Op_index,Dest,Type):-
+  binary_type("EXEC"),
+	code(EA),
+	instruction_get_op(EA,Op_index,Op),
+	(
+        op_immediate(Op,Dest);
+        pc_relative_operand(EA,Op_index,Dest);
+	op_indirect(Op,_,_,_,_,Dest,_)
+    ),
+    (
+        code(Dest), Type="code"
+        ;
+        data_section(Name),
+        section(Name,SizeSect,Base),
+        Dest>=Base,
+        Dest<=Base+SizeSect,
+        Type="data"
+    ).
+
+// Deal with pie and relocatable code
+symbolic_operand_candidate(EA,Op_index,Dest,Type):-
+  !binary_type("EXEC"),
+    code(EA),
+    (
+    instruction_immediate_offset(EA,Op_index,ImmediateOffset),
+    relocation(EA+ImmediateOffset,_,Symbol,Addend),
+    symbol(SymbolAddr,_,_,_,_,Symbol),
+    Dest= SymbolAddr+Addend
+	;
+    instruction_displacement_offset(EA,Op_index,DisplacementOffset),
+    relocation(EA+DisplacementOffset,_,Symbol,Addend),
+    symbol(SymbolAddr,_,_,_,_,Symbol),
+    Dest= SymbolAddr+Addend
+	;
+    direct_call(EA,Dest),
+    Op_index=1
+    ;
+		direct_jump(EA,Dest),
+		//ignore artificial jumps from loop instructions/prefix
+    instruction_get_operation(EA,Operation),
+    jump_operation(Operation),
+    Op_index=1
+    ;
+    pc_relative_operand(EA,Op_index,Dest)
+	),
+	(
+		code(Dest), Type="code"
+		;
+		data_section(Name),
+		section(Name,SizeSect,Base),
+		Dest>=Base,
+		Dest<=Base+SizeSect,
+		Type="data"
+	).
+
+/////////////////////////////////////////////////////////////////
+/// Final decision on symbolization of operands
+
+// no decision needs to be made with pie code
+symbolic_operand_point(EA,Index,10,"pie code"):-
+    !binary_type("EXEC"),
+    symbolic_operand_candidate(EA,Index,_,_).
+
+symbolic_operand_point(EA,Imm_index,-1,"compared to non-address"):-
+	cmp_immediate_to_reg(EA,Reg,Imm_index,_),
+	def_used(EA_def,Reg,EA,_),
+	def_used(EA_def,Reg,EA2,_),EA2!=EA,
+	cmp_immediate_to_reg(EA2,Reg,Imm_index2,_),
+	!symbolic_operand_candidate(EA2,Imm_index2,_,_).
+
+symbolic_operand_point(EA,Op_index,-1,"moved/compared-with-different-size"):-
+	symbolic_operand_candidate(EA,Op_index,_,_),
+	instruction_get_op(EA,Op_index,Op),
+	op_immediate(Op,_),
+	instruction_get_op(EA,_,Op2),
+	op_indirect(Op2,_,_,_,_,_,Size),
+	pointer_size(Pt_size),
+	Size/8 < Pt_size.
+
+
+symbolic_operand_point(EA,Op_index,1,"used-for-address"):-
+	symbolic_operand_candidate(EA,Op_index,_,_),
+	instruction_get_op(EA,Op_index,Op),
+	op_immediate(Op,_),
+	def_used_for_address(EA,_).
+
+symbolic_operand_total_points(EA,Operand,Points):-
+	symbolic_operand_candidate(EA,Operand,_,_),
+	Points=sum X:{symbolic_operand_point(EA,Operand,X,_)}.
+
+symbolic_operand_total_points(EA,Operand,0):-
+	symbolic_operand_candidate(EA,Operand,_,_),
+	!symbolic_operand_point(EA,Operand,_,_).
+
+symbolic_operand(EA,Op_index,Value,Type):-
+	symbolic_operand_candidate(EA,Op_index,Value,Type),
+	symbolic_operand_total_points(EA,Op_index,Points),
+	Points>=0.
+
+
+///////////////////////////////
+// label candidates before moving
+.decl labeled_data_candidate(EA:address)
+
+labeled_data_candidate(EA):-
+	symbol(EA,_,_,_,_,_).
+
+labeled_data_candidate(EA):-
+	symbolic_operand(_,_,EA,"data").
+
+labeled_data_candidate(Val):-
+	address_in_data_refined(EA,Val),
+	pointer_size(Pt_size),
+	EA % Pt_size =0.
+
+// Detect symbol-symbol
 ////////////////////////////////////////////////////////////////////////
 symbol_minus_symbol_candidate(EA,EA,Symbol2):-
 	data_access_pattern(EA,4,4,_Ref),
 	relative_address(EA,EA,Symbol2),
 	block(Symbol2),
+	relative_address(EA+4,EA,Symbol3),
+	block(Symbol3).
+
+symbol_minus_symbol_candidate(EA,EA,Symbol2):-
+	relative_address(EA,EA,Symbol2),
+	block(Symbol2),
+	data_access_pattern(EA+4,4,4,_Ref),
 	relative_address(EA+4,EA,Symbol3),
 	block(Symbol3).
 
@@ -118,8 +249,16 @@ symbol_minus_symbol_candidate(EA,EA_ref,Symbol2):-
 symbol_minus_symbol_candidate(EA+4,EA_ref,Symbol):-
 	symbol_minus_symbol_candidate(EA,EA_ref,_),
   relative_address(EA+4,EA_ref,Symbol),
-	!preferred_data_access(EA+4,_),
-	block(Symbol).
+	block(Symbol),
+	(
+		!preferred_data_access(EA+4,_)
+	;
+	  preferred_data_access(EA+4,EA_label),
+    data_access_pattern(EA_label,4,4,_)
+	;
+	  preferred_data_access(EA+4,EA_label),
+    data_access_pattern(EA_label,4,0,_)
+	).
 ////////////////////////////////////////////////////////////////////////
 // address_in_data considers anything that points to the code region
 // this refinement restricts that to the beginning of the final blocks
@@ -158,59 +297,6 @@ address_in_data_refined(EA,Val):-
 
 address_in_data_refined_range.in_ea(EA):-
 	address_in_data_refined(EA,_).
-	
-////////////////////////////////////////////////////////////////////////////////////
-// candidates of symbolic values in the code
-// symbolic_code_operand_candidate points to code
-// symbolic_data_operand_candidate points to data
-
-.decl symbolic_code_operand_candidate(ea:address,operand_index:number,Dest:address)
-.decl symbolic_data_operand_candidate(ea:address,operand_index:number,Dest:address)
-
-symbolic_code_operand_candidate(EA,Op_index,Dest):-
-	code(EA),
-	instruction_get_op(EA,Op_index,Op),
-	(
-		can_have_symbolic(EA),
-		op_immediate(Op,Dest)
-	;
-		pc_relative_operand(EA,Op_index,Dest)
-	;
-		can_have_symbolic(EA),
-	        op_indirect(Op,_,_,_,_,Dest,_Size)
-	),
-	code(Dest).
-	
-
-symbolic_data_operand_candidate(EA,Op_index,Dest):-
-	code(EA),
-	instruction_get_op(EA,Op_index,Op),
-	(
-		can_have_symbolic(EA),
-		op_immediate(Op,Dest)
-	;
-		pc_relative_operand(EA,Op_index,Dest)
-	;
-		can_have_symbolic(EA),
-   	        op_indirect(Op,_,_,_,_Multiplier,Dest,_Size)
-	),
-	data_section(Name),
-	section(Name,SizeSect,Base),
-	Dest>=Base,
-	Dest<=Base+SizeSect.
-///////////////////////////////
-// label candidates before moving
-.decl labeled_data_candidate(EA:address)
-
-labeled_data_candidate(EA):-
-	symbol(EA,_,_,_,_,_).
-
-labeled_data_candidate(EA):-
-	symbolic_data_operand_candidate(_,_,EA).
-
-labeled_data_candidate(Val):-
-	address_in_data_refined(_,Val).
-
 /////////////////////////////////////////////////////////////////////////////////
 // Detect strings
 string_candidate(Beg,End+1):-
@@ -265,6 +351,7 @@ data_object_candidate(EA,Size,"other"):-
   preferred_data_access(EA,Label),
 	data_access_pattern(Label,Size,_,_),
 	Size!=Pt_size,
+	Size>0,
 	pointer_size(Pt_size).
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -294,25 +381,42 @@ next_address_in_data(EA,EA_next):-
 	address_in_data_refined(EA_next,_).
 
 
-.decl address_array_aux(EA:address,Distance:number)
+.decl address_array_aux(EA:address,Distance:number,type:symbol)
 
-address_array_aux(EA,Diff):-
-	address_in_data_refined(EA,_),
+address_array_aux(EA,Diff,"code"):-
+	address_in_data_refined(EA,Dest1),code(Dest1),
 	pointer_size(Pt_size),
 	EA % Pt_size =0,
 	next_address_in_data(EA,EA_next),
 	Diff= EA_next-EA,
-	address_in_data_refined(EA+Diff,_),
-	next_address_in_data(EA+Diff,EA+(2*Diff)).
+	address_in_data_refined(EA+Diff,Dest2),code(Dest2),
+	next_address_in_data(EA+Diff,EA+(2*Diff)),
+	address_in_data_refined(EA+(2*Diff),Dest3),code(Dest3).
+
+address_array_aux(EA,Diff,"data"):-
+	address_in_data_refined(EA,Dest1),data_byte(Dest1,_),
+	pointer_size(Pt_size),
+	EA % Pt_size =0,
+	next_address_in_data(EA,EA_next),
+	Diff= EA_next-EA,
+	address_in_data_refined(EA+Diff,Dest2),data_byte(Dest2,_),
+	next_address_in_data(EA+Diff,EA+(2*Diff)),
+	address_in_data_refined(EA+(2*Diff),Dest3),data_byte(Dest3,_).
 	
-address_array_aux(EA+Diff,Diff):-
-	address_array_aux(EA,Diff),
-	next_address_in_data(EA,EA+Diff).
+address_array_aux(EA+Diff,Diff,"code"):-
+	address_array_aux(EA,Diff,"code"),
+	next_address_in_data(EA,EA+Diff),
+	address_in_data_refined(EA+Diff,Dest),code(Dest).
+
+address_array_aux(EA+Diff,Diff,"data"):-
+	address_array_aux(EA,Diff,"data"),
+	next_address_in_data(EA,EA+Diff),
+	address_in_data_refined(EA+Diff,Dest),data_byte(Dest,_).
 	
 .decl address_array(EA:address)
 
 address_array(EA):-
-	address_array_aux(EA,_).
+	address_array_aux(EA,_,_).
 	
 .init address_array_range=empty_range
 
@@ -321,13 +425,7 @@ address_array_range.in_ea(EA):-
 
 
 //////////////////////////////////////////////////////////////////////////////////
-// Final decision on symbolization
-
-//FIXME maybe we have to refine this (are there false positives?)
-symbolic_operand(EA,Op_index):-
-	symbolic_code_operand_candidate(EA,Op_index,_).
-symbolic_operand(EA,Op_index):-
-	symbolic_data_operand_candidate(EA,Op_index,_).	
+// Final decision on symbolization of data
 
 data_object_point(EA,4,"symbol-symbol",4,"basic point"):-
 	data_object_candidate(EA,4,"symbol-symbol").
@@ -349,9 +447,16 @@ data_object_point(EA,Pt_size,"symbol",5,"data access"):-
 	;
 	data_access_pattern(Label,0,_,_)	
 	).
+// if we conflict with several other candidates we reduce the points
+data_object_point(EA,Pt_size,"symbol",-2,"multiple conflict"):-
+  data_object_candidate(EA,Pt_size,"symbol"),
+	data_object_conflict(EA,Pt_size,"symbol",EA2,_,"other"),
+	data_object_conflict(EA,Pt_size,"symbol",EA3,_,"other"),
+	EA2!=EA3.
 
 data_object_point(EA,Pt_size,"symbol",1,"no label conflicts"):-
   data_object_candidate(EA,Pt_size,"symbol"),
+	labeled_data_candidate(EA),
  	!labeled_data_candidate(EA+1),
 	!labeled_data_candidate(EA+2),
 	!labeled_data_candidate(EA+3),
@@ -364,19 +469,18 @@ data_object_point(EA,Pt_size,"symbol",2,"aligned"):-
   data_object_candidate(EA,Pt_size,"symbol"),
 	EA % Pt_size =0.
 
+data_object_point(EA,Pt_size,"symbol",10,"has relocation"):-
+  !binary_type("EXEC"),
+  data_object_candidate(EA,Pt_size,"symbol"),
+    relocation(EA,_,_,_).
 
 data_object_point(EA,Size,"string",0,"basic point"):-
 	data_object_candidate(EA,Size,"string").
 
 //extra point if the string is long
-data_object_point(EA,Size,"string",1,"long string"):-
+data_object_point(EA,Size,"string",3,"long string"):-
 	data_object_candidate(EA,Size,"string"),
-	Size>8.
-
-data_object_point(EA,Size,"string",2,"very long string"):-
-	data_object_candidate(EA,Size,"string"),
-	Size>16.
-
+	Size>5.
 
 // data access negative heuristic
 data_object_point(EA,Size,"other",4,"data access"):-
@@ -407,19 +511,25 @@ data_object_conflict(EA,Size,Type,EA,Size,Type2):-
   data_object_candidate(EA,Size,Type2),
 	Type!=Type2.
 
+.decl data_object_total_points(EA:address,Size:number,Type:symbol,Points:number)
+.output data_object_total_points
+
+data_object_total_points(EA,Size,Type,Points):-
+	data_object_candidate(EA,Size,Type),
+	Points=sum X:{data_object_point(EA,Size,Type,X,_)}.
 
 data_object(EA,Size,Type):-
-  data_object_candidate(EA,Size,Type),
+  data_object_total_points(EA,Size,Type,Points),
 	!discarded_data_object(EA,Size,Type),
-	(sum X:{data_object_point(EA,Size,Type,X,_)} >=2
+	(Points>=2
 	; //if the object is a string and there is no conflict we keep it no matter the evidence
 	Type="string"
 	).
 
 discarded_data_object(EA_f,Size_f,Type_f):-
   data_object_conflict(EA,Size,Type,EA2,Size2,Type2),
-	Points1=sum X:{data_object_point(EA,Size,Type,X,_)},
-	Points2=sum Y:{data_object_point(EA2,Size2,Type2,Y,_)},
+	data_object_total_points(EA,Size,Type,Points1),
+	data_object_total_points(EA2,Size2,Type2,Points2),
   (
 		Points1<Points2,
 		EA_f=EA,
@@ -431,7 +541,6 @@ discarded_data_object(EA_f,Size_f,Type_f):-
 		Size_f=Size2,
 		Type_f=Type2
 	).
-
 
 // predicates to export
 
@@ -459,7 +568,7 @@ labeled_data(EA):-
 	symbol(EA,_,_,_,_,_).
 
 labeled_data(EA):-
-	symbolic_data_operand_candidate(Src,_,EA),
+	symbolic_operand(Src,_,EA,"data"),
 	!moved_label(Src,_,EA,_).
 
 labeled_data(EA):-

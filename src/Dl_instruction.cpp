@@ -35,5 +35,7 @@ std::string Dl_instruction::result_tabs()
         else
             o << "\t" << 0;
     }
+    o << "\t" << static_cast<int16_t>(immediateOffset) << "\t"
+      << static_cast<int16_t>(displacementOffset);
     return o.str();
 }

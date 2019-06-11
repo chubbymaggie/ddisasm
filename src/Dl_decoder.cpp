@@ -65,11 +65,8 @@ std::string str_toupper(std::string s)
 std::string Dl_decoder::getRegisterName(unsigned int reg)
 {
     if(reg == X86_REG_INVALID)
-        return "NullReg64";
+        return "NONE";
     std::string name = str_toupper(cs_reg_name(this->csHandle, reg));
-    // FIXME remove this once capstone returns the right name for ST(0)
-    if(name == "ST(0")
-        return "ST(0)";
     return name;
 }
 
@@ -110,7 +107,8 @@ Dl_instruction Dl_decoder::transformInstruction(cs_insn& insn)
         }
     }
     // FIXME what about the prefix?
-    return Dl_instruction(insn.address, insn.size, prefix, name, op_codes);
+    return Dl_instruction(insn.address, insn.size, prefix, name, op_codes,
+                          detail.encoding.imm_offset, detail.encoding.disp_offset);
 }
 
 Dl_operator Dl_decoder::buildOperand(const cs_x86_op& op)

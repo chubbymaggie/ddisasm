@@ -1,0 +1,120 @@
+.decl false_negative(EA:address)
+.decl false_positive(EA:address)
+.output false_negative
+.output false_positive
+.decl relocation_in_operand(EA:address,Index:number,Rel:address)
+
+
+relocation_in_operand(EA,Index,Location):-
+    code(EA),
+    instruction_immediate_offset(EA,Index,Offset),
+    relocation(Location,_,_,_),
+    Location=EA+Offset.
+
+relocation_in_operand(EA,Index,Location):-
+    code(EA),
+    instruction_displacement_offset(EA,Index,Offset),
+    relocation(Location,_,_,_),
+    Location=EA+Offset.
+
+
+.decl trivial_relocation(EA:address)
+
+trivial_relocation(EA):-
+    relocation(EA,_,Symbol,0),
+    symbol(0,_,_,_,0,Symbol),
+    Symbol!="".
+
+trivial_relocation(EA):-
+    relocation(EA,_,"__TMC_END__",7).
+
+
+.decl bad_symbol_constant(EA:address,cnt:number)
+.output bad_symbol_constant
+
+bad_symbol_constant(EA,Cnt):-
+    relocation_in_operand(EA,Index,Rel),
+    relocation(Rel,_,_,Cnt),
+    symbolic_operand(EA,Index,Dest,_),
+    !moved_label(EA,Index,_,_),
+    section(Name,SectSize,Base),
+	Dest>=Base,
+	Dest<SectSize+Base,
+
+    section(Name2,SectSize2,Base2),
+    Name2!=Name,
+	Dest-Cnt>=Base2,
+    Dest-Cnt<SectSize2+Base2,
+    //not pointing to the section boundary
+    Dest-Cnt != SectSize+Base.
+
+bad_symbol_constant(EA,Cnt):-
+    relocation_in_operand(EA,Index,Rel),
+    relocation(Rel,_,_,Cnt),
+    moved_label(EA,Index,Orig,Dest),
+    section(Name,SectSize,Base),
+	Dest>=Base,
+	Dest<SectSize+Base,
+
+    section(Name2,SectSize2,Base2),
+    Name2!=Name,
+	Orig-Cnt>=Base2,
+    Orig-Cnt<SectSize2+Base2,
+    //not pointing to the section boundary
+    Orig-Cnt != SectSize+Base.
+
+
+false_negative(EA):-
+    relocation_in_operand(EA,Index,Rel),
+    !trivial_relocation(Rel),
+    !symbolic_operand(EA,Index,_,_),
+    !moved_label(EA,Index,_,_).
+
+false_positive(EA):-
+    code(EA),
+    (
+        symbolic_operand(EA,Index,_,_); 
+        moved_label(EA,Index,_,_)
+    ),
+    !pc_relative_operand(EA,Index,_),
+    !direct_jump(EA,_),
+    !direct_call(EA,_),
+    !relocation_in_operand(EA,Index,_).
+
+.decl zero_relocation(EA:address)
+
+zero_relocation(EA):-
+    relocation(EA,_,_,_),
+    data_byte(EA,0),
+    data_byte(EA+1,0),
+    data_byte(EA+2,0),
+    data_byte(EA+3,0),
+    data_byte(EA+4,0),
+    data_byte(EA+5,0),
+    data_byte(EA+6,0),
+    data_byte(EA+7,0).
+    
+
+false_negative(EA):-
+    data_byte(EA,_),
+    relocation(EA,_,_,_),
+    !zero_relocation(EA),
+    !symbolic_data(EA,_),
+    !symbol_minus_symbol(EA,_,_),
+
+    regular_data_section(Sect),
+    section(Sect,SizeSect,BegSect),
+    EA>=BegSect,
+    EA<SizeSect+BegSect.
+
+false_positive(EA):-
+    (
+    symbolic_data(EA,_);
+    symbol_minus_symbol(EA,_,_)
+    ),
+    !relocation(EA,_,_,_),
+
+    regular_data_section(Sect),
+    section(Sect,SizeSect,BegSect),
+    EA>=BegSect,
+    EA<SizeSect+BegSect.
